@@ -19,7 +19,7 @@
 #include <boost/program_options.hpp>
 namespace po = boost::program_options;
 
-//#pragma warning(disable : 4996)
+#pragma warning(disable : 4996)
 #pragma comment(lib,"ws2_32.lib") //Winsock Library
 
 //List of DNS Servers registered on the system
@@ -36,6 +36,9 @@ char dns_servers[10][100];
 //Max size of UDP package
 static const size_t DEF_BUF_SIZE = 512;
 
+//Default UDP port
+static const size_t DEF_PORT = 53;
+
 // Google DNS which using bu default
 static const std::string DEF_DNS_GOOGLE = "8.8.8.8";
 // Yandex DNS server 77.88.8.7(with blocking censored content)
@@ -43,11 +46,10 @@ static const std::string DEF_DNS_YANDEX = "77.88.8.7";
 
 //Function Declarations
 void printUsage(char*);
-void RetrieveDnsServersFromRegistry(void);
 void ChangetoDnsNameFormat(unsigned char*, unsigned char*);
 unsigned char* ReadName(unsigned char*, unsigned char*, int*);
 unsigned char* PrepareDnsQueryPacket(unsigned char*);
-void nGetHostByName(unsigned char*, const std::string &);
+void listen(const std::string &);
 
 void printUsage(char* programName) {
 	printf("\nUsage:\n"
@@ -134,82 +136,19 @@ unsigned char* ReadName(unsigned char* reader, unsigned char* buffer, int* count
 	return name;
 }
 
-//Retrieve the DNS servers from the registry
-//void RetrieveDnsServersFromRegistry()
-//{
-//	HKEY hkey = 0;
-//	char name[256];
-//
-//	const char path[] = "SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces";
-//
-//	char* fullpath[256];
-//	unsigned long s = sizeof(name);
-//	int err;
-//	HKEY inter;
-//	unsigned long i, j, count, dns_count = 0;
-//
-//	//Open the registry folder
-//	RegOpenKeyExA(HKEY_LOCAL_MACHINE, path, 0, KEY_READ, &hkey);
-//
-//	//how many interfaces
-//	RegQueryInfoKey(hkey, 0, 0, 0, &count, 0, 0, 0, 0, 0, 0, 0);
-//
-//	for (i = 0; i < count; i++)
-//	{
-//		s = 256;
-//		//Get the interface subkey name
-//		RegEnumKeyExA(hkey, i, (char*)name, &s, 0, 0, 0, 0);
-//
-//		//Make the full path
-//		strcpy((char*)fullpath, path);
-//		strcat((char*)fullpath, "\\");
-//		strcat((char*)fullpath, name);
-//
-//		//Open the full path name
-//		RegOpenKeyExA(HKEY_LOCAL_MACHINE, (const char*)fullpath, 0, KEY_READ, &inter);
-//
-//		//Extract the value in Nameserver field
-//		s = 256;
-//		err = RegQueryValueExA(inter, "NameServer", 0, 0, (unsigned char*)name, &s);
-//
-//		if (err == ERROR_SUCCESS && strlen(name) > 0)
-//		{
-//			strcpy(dns_servers[dns_count++], name);
-//		}
-//	}
-//
-//	for (i = 0; i < dns_count; i++)
-//	{
-//		for (j = 0; j < strlen(dns_servers[i]); j++)
-//		{
-//			if (dns_servers[i][j] == ',' || dns_servers[i][j] == ' ')
-//			{
-//				strcpy(dns_servers[dns_count++], dns_servers[i] + j + 1);
-//				dns_servers[i][j] = 0;
-//			}
-//		}
-//	}
-//
-//	printf("\nThe following DNS Servers were found on your system...");
-//	for (i = 0; i < dns_count; i++)
-//	{
-//		printf("\n%d) %s", i + 1, dns_servers[i]);
-//	}
-//}
-
 //reading answers
-void handleDNSData(unsigned char* buf, size_t nHostNameSize ) {
+void handleDNSData(unsigned char* buf, size_t nHostNameSize) {
 
 	//the replies from the DNS server
 	struct RES_RECORD	answers[20],
-						auth[20],
-						addit[20];
+		auth[20],
+		addit[20];
 
 	struct sockaddr_in a;
 
 	struct DNS_HEADER* dns = NULL;
 
-	unsigned char *qname, *reader;
+	unsigned char* qname, * reader;
 
 	dns = (struct DNS_HEADER*)buf;
 	printDNSHeaderInfo(dns);
@@ -345,78 +284,135 @@ void handleDNSData(unsigned char* buf, size_t nHostNameSize ) {
 	}
 }
 
-void nGetHostByName(unsigned char* host, const std::string& dns_server)
+void listen(const std::string& dns_server)
 {
 	unsigned char buf[DEF_BUF_SIZE];
-	ZeroMemory(buf, sizeof(buf));
 
-	unsigned char* qname, * reader;
-	int stop;
+	SOCKET sSock, cSock;
+	struct sockaddr_in servAddr, recvAddr;
 
-	SOCKET s;
-	struct sockaddr_in a;
+	int servLen{ sizeof(servAddr) };
+	int recvLen;
 
-	struct sockaddr_in dest;
-
-	struct DNS_HEADER* dns = NULL;
-	struct QUESTION* qinfo = NULL;
-
-	s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP); //UDP packet for DNS queries
-
-	//Configure the sockaddress structure with information of DNS server
-	dest.sin_family = AF_INET;
-	dest.sin_port = htons(53);
-	//Set the dns server
-	if (strlen(dns_servers[0]) > 0)
+	//Create a socket
+	if ((sSock = socket(AF_INET, SOCK_DGRAM, 0)) == INVALID_SOCKET)
 	{
-		//Use the dns server found on system
-		//dest.sin_addr.s_addr = inet_addr(dns_servers[0]);
-		inet_pton(AF_INET, dns_servers[0], &dest.sin_addr);
+		printf("Could not create socket : %d", WSAGetLastError());
 	}
-	else
+	printf("Listen Socket created.\n");
+
+	//Prepare the sockaddr_in structure
+	servAddr.sin_family = AF_INET;
+	servAddr.sin_addr.s_addr = INADDR_ANY;
+	servAddr.sin_port = htons(DEF_PORT);
+
+	//Bind
+	if (bind(sSock, (struct sockaddr*) & servAddr, sizeof(servAddr)) == SOCKET_ERROR)
 	{
-		//Use popular DNS servers 8.8.8.8, 8.8.4.4 Google or 77.88.8.8, 77.88.8.7(with blocking censored content) Yandex
-		//dest.sin_addr.s_addr = inet_addr("8.8.8.8");
-		inet_pton(AF_INET, dns_server.c_str(), &dest.sin_addr);
+		printf("Bind failed with error code : %d", WSAGetLastError());
+		exit(EXIT_FAILURE);
 	}
+	puts("Bind done");
 
-	//Set the DNS structure to standard queries
-	dns = (struct DNS_HEADER*) & buf;
+	//keep listening for data
+	//while (1)
+	//{
+	//	printf("Waiting for data...");
+	//	fflush(stdout);
 
-	printf("\nDNS request header id: %d", GetCurrentProcessId());
+	//	//clear the buffer by filling null, it might have previously received data
+		ZeroMemory(buf, sizeof(buf));
 
-	dns->id = (unsigned short)htons(GetCurrentProcessId());
-	dns->rd = 1; //Recursion Desired
-	dns->q_count = htons(1); //we have only 1 question
+	//	//try to receive some data, this is a blocking call
+	//	if ((recvLen = recvfrom(sSock, (char*)buf, DEF_BUF_SIZE, 0, (struct sockaddr*) & recvAddr, &servLen)) == SOCKET_ERROR)
+	//	{
+	//		printf("recvfrom() failed with error code : %d", WSAGetLastError());
+	//		exit(EXIT_FAILURE);
+	//	}
 
-	//point to the query portion
-	qname = (unsigned char*)&buf[sizeof(struct DNS_HEADER)];
+	//	//print details of the client/peer and the data received
+	//	printf("Received packet from %s:%d\n", inet_ntoa(recvAddr.sin_addr), ntohs(recvAddr.sin_port));
+	//	printf("Data: ");
 
-	ChangetoDnsNameFormat(qname, host);
-	qinfo = (struct QUESTION*) & buf[sizeof(struct DNS_HEADER) + (strlen((const char*)qname) + 1)]; //fill it
+	//	//now reply the client with the same data
+	//	if (sendto(sSock, (char*)buf, recvLen, 0, (struct sockaddr*) & recvAddr, servLen) == SOCKET_ERROR)
+	//	{
+	//		printf("sendto() failed with error code : %d", WSAGetLastError());
+	//		exit(EXIT_FAILURE);
+	//	}
+	//}
 
-	qinfo->qtype = htons(1); //we are requesting the ipv4 address
-	qinfo->qclass = htons(1); //type IN (Internet)
+		//unsigned char buf[DEF_BUF_SIZE];
+		ZeroMemory(buf, sizeof(buf));
 
-	printf("\nSending Packet...");
-	if (sendto(s, (char*)buf, sizeof(struct DNS_HEADER) + (strlen((const char*)qname) + 1) + sizeof(struct QUESTION), 0, (struct sockaddr*) & dest, sizeof(dest)) == SOCKET_ERROR)
-	{
-		printf("%d error", WSAGetLastError());
-	}
-	printf("Sent");
+		unsigned char* qname, * reader;
+		int stop;
+
+		SOCKET s;
+		struct sockaddr_in a;
+
+		struct sockaddr_in dest;
+
+		struct DNS_HEADER* dns = NULL;
+		struct QUESTION* qinfo = NULL;
+
+		s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP); //UDP packet for DNS queries
+
+		//Configure the sockaddress structure with information of DNS server
+		dest.sin_family = AF_INET;
+		dest.sin_port = htons(53);
+		//Set the dns server
+		if (strlen(dns_servers[0]) > 0)
+		{
+			//Use the dns server found on system
+			//dest.sin_addr.s_addr = inet_addr(dns_servers[0]);
+			inet_pton(AF_INET, dns_servers[0], &dest.sin_addr);
+		}
+		else
+		{
+			//Use popular DNS servers 8.8.8.8, 8.8.4.4 Google or 77.88.8.8, 77.88.8.7(with blocking censored content) Yandex
+			//dest.sin_addr.s_addr = inet_addr("8.8.8.8");
+			inet_pton(AF_INET, dns_server.c_str(), &dest.sin_addr);
+		}
+
+		//Set the DNS structure to standard queries
+		dns = (struct DNS_HEADER*) & buf;
+
+		printf("\nDNS request header id: %d", GetCurrentProcessId());
+
+		dns->id = (unsigned short)htons(GetCurrentProcessId());
+		dns->rd = 1; //Recursion Desired
+		dns->q_count = htons(1); //we have only 1 question
+
+		//point to the query portion
+		qname = (unsigned char*)&buf[sizeof(struct DNS_HEADER)];
+
+		unsigned char host[] = "www.google.com";
+		ChangetoDnsNameFormat(qname, host);
+		qinfo = (struct QUESTION*) & buf[sizeof(struct DNS_HEADER) + (strlen((const char*)qname) + 1)]; //fill it
+
+		qinfo->qtype = htons(1); //we are requesting the ipv4 address
+		qinfo->qclass = htons(1); //type IN (Internet)
+
+		printf("\nSending Packet...");
+		if (sendto(s, (char*)buf, sizeof(struct DNS_HEADER) + (strlen((const char*)qname) + 1) + sizeof(struct QUESTION), 0, (struct sockaddr*) & dest, sizeof(dest)) == SOCKET_ERROR)
+		{
+			printf("%d error", WSAGetLastError());
+		}
+		printf("Sent");
 
 
-	int i = sizeof(dest);
-	printf("\nReceiving answer...");
-	if (recvfrom(s, (char*)buf, DEF_BUF_SIZE, 0, (struct sockaddr*) & dest, &i) == SOCKET_ERROR)
-	{
-		printf("Failed. Error Code : %d", WSAGetLastError());
-	}
-	printf("Received.");
+		int i = sizeof(dest);
+		printf("\nReceiving answer...");
+		if (recvfrom(s, (char*)buf, DEF_BUF_SIZE, 0, (struct sockaddr*) & dest, &i) == SOCKET_ERROR)
+		{
+			printf("Failed. Error Code : %d", WSAGetLastError());
+		}
+		printf("Received.");
 
-	handleDNSData(buf, strlen((const char*)qname) + 1);
+		handleDNSData(buf, strlen((const char*)qname) + 1);
 
-	return;
+		return;
 }
 
 //this will convert www.google.com to 3www6google3com ;
@@ -485,7 +481,7 @@ int main(int argc, char** argv)
 	}
 	printf("Initialised.");
 
-	nGetHostByName(hostname, DEF_DNS_GOOGLE);
+	listen(strDNSServer);
 
 	system("pause");
 

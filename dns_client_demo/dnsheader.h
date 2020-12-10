@@ -25,8 +25,7 @@ struct DNS_HEADER
 
 void printDNSHeaderInfo(const DNS_HEADER* dns) {
 
-	printf("\n================================== ");
-	printf("\nDNS header contains : ");
+	printf("\n=========DNS header=========");
 	printf("\n id: %d", ntohs(dns->id));
 	printf("\n rd: %d", (dns->rd));
 	printf("\n tc: %d", (dns->tc));
@@ -43,6 +42,6 @@ void printDNSHeaderInfo(const DNS_HEADER* dns) {
 	printf("\n %d Answers.", ntohs(dns->ans_count));
 	printf("\n %d Authoritative Servers.", ntohs(dns->auth_count));
 	printf("\n %d Additional records.", ntohs(dns->add_count));
-	printf("\n==================================\n");
+	printf("\n==========================\n");
 
 }

@@ -49,6 +49,7 @@ void printUsage(char*);
 void ChangetoDnsNameFormat(unsigned char*, unsigned char*);
 unsigned char* ReadName(unsigned char*, unsigned char*, int*);
 unsigned char* PrepareDnsQueryPacket(unsigned char*);
+void handleDNSData(unsigned char*);
 void listen(const std::string &);
 
 void printUsage(char* programName) {
@@ -59,22 +60,16 @@ void printUsage(char* programName) {
 
 po::variables_map parse_args(int argc, char** argv, po::options_description& desc) {
 
-	po::positional_options_description p;
-	p.add("hostname", -1);
-
 	desc.add_options()
 		("help,h", "Produce help message")
 		("dns_server,d"
 			, po::value<std::string>()->default_value(DEF_DNS_GOOGLE), 
 			"IPv4 address of DNS server to send the DNS request to. If not set the DNS request will be sent to the google DNS 8.8.8.8 ")
-		("hostname", po::value<std::string>()->required(), "Hostname to resolve")
 		;
 
 	po::variables_map vm;
 	const auto& parsed = po::command_line_parser(argc, argv)
 		.options(desc)
-		.positional(p)
-		.allow_unregistered()
 		.run();
 	po::store(parsed, vm);
 	po::notify(vm);
@@ -137,7 +132,7 @@ unsigned char* ReadName(unsigned char* reader, unsigned char* buffer, int* count
 }
 
 //reading answers
-void handleDNSData(unsigned char* buf, size_t nHostNameSize) {
+void handleDNSData(unsigned char* buf) {
 
 	//the replies from the DNS server
 	struct RES_RECORD	answers[20],
@@ -148,13 +143,17 @@ void handleDNSData(unsigned char* buf, size_t nHostNameSize) {
 
 	struct DNS_HEADER* dns = NULL;
 
-	unsigned char* qname, * reader;
+	unsigned char * reader;
 
 	dns = (struct DNS_HEADER*)buf;
 	printDNSHeaderInfo(dns);
 
-	//move ahead of the dns header and the query field
-	reader = &buf[sizeof(struct DNS_HEADER) + nHostNameSize + sizeof(struct QUESTION)];
+	int sizeName = 0;
+
+	reader = &buf[sizeof(struct DNS_HEADER)];
+	unsigned char* name = ReadName(reader, buf, &sizeName);
+
+	reader += sizeName + sizeof(struct QUESTION);
 
 	int i, j;
 	int stop = 0;
@@ -294,6 +293,9 @@ void listen(const std::string& dns_server)
 	int servLen{ sizeof(servAddr) };
 	int recvLen;
 
+	struct DNS_HEADER* dns = NULL;
+	struct QUESTION* qinfo = NULL;
+
 	//Create a socket
 	if ((sSock = socket(AF_INET, SOCK_DGRAM, 0)) == INVALID_SOCKET)
 	{
@@ -301,9 +303,15 @@ void listen(const std::string& dns_server)
 	}
 	printf("Listen Socket created.\n");
 
+
+
+	char *host = NULL;
+	struct hostent* host_entry = gethostbyname(host); //find host information
+	const char * IP = inet_ntoa(*((struct in_addr*) host_entry->h_addr_list[0])); //Convert into IP string
+
 	//Prepare the sockaddr_in structure
 	servAddr.sin_family = AF_INET;
-	servAddr.sin_addr.s_addr = INADDR_ANY;
+	servAddr.sin_addr.s_addr = inet_addr(IP);
 	servAddr.sin_port = htons(DEF_PORT);
 
 	//Bind
@@ -315,104 +323,92 @@ void listen(const std::string& dns_server)
 	puts("Bind done");
 
 	//keep listening for data
-	//while (1)
-	//{
-	//	printf("Waiting for data...");
-	//	fflush(stdout);
+	while (1)
+	{
+		printf("\n\nWaiting for data...");
+		fflush(stdout);
 
-	//	//clear the buffer by filling null, it might have previously received data
+		//clear the buffer by filling null, it might have previously received data
 		ZeroMemory(buf, sizeof(buf));
 
-	//	//try to receive some data, this is a blocking call
-	//	if ((recvLen = recvfrom(sSock, (char*)buf, DEF_BUF_SIZE, 0, (struct sockaddr*) & recvAddr, &servLen)) == SOCKET_ERROR)
-	//	{
-	//		printf("recvfrom() failed with error code : %d", WSAGetLastError());
-	//		exit(EXIT_FAILURE);
-	//	}
+		//try to receive some data, this is a blocking call
+		if ((recvLen = recvfrom(sSock, (char*)buf, DEF_BUF_SIZE, 0, (struct sockaddr*) & recvAddr, &servLen)) == SOCKET_ERROR)
+		{
+			printf("recvfrom() failed with error code : %d", WSAGetLastError());
+			exit(EXIT_FAILURE);
+		}
 
-	//	//print details of the client/peer and the data received
-	//	printf("Received packet from %s:%d\n", inet_ntoa(recvAddr.sin_addr), ntohs(recvAddr.sin_port));
-	//	printf("Data: ");
+		//print details of the client/peer and the data received
+		printf("\nReceived packet from %s:%d", inet_ntoa(recvAddr.sin_addr), ntohs(recvAddr.sin_port));
+		printf("\nRequest data: ");
+		handleDNSData(buf);
 
-	//	//now reply the client with the same data
-	//	if (sendto(sSock, (char*)buf, recvLen, 0, (struct sockaddr*) & recvAddr, servLen) == SOCKET_ERROR)
-	//	{
-	//		printf("sendto() failed with error code : %d", WSAGetLastError());
-	//		exit(EXIT_FAILURE);
-	//	}
-	//}
-
-		//unsigned char buf[DEF_BUF_SIZE];
-		ZeroMemory(buf, sizeof(buf));
-
-		unsigned char* qname, * reader;
-		int stop;
-
-		SOCKET s;
-		struct sockaddr_in a;
+		unsigned char* qname;
 
 		struct sockaddr_in dest;
 
-		struct DNS_HEADER* dns = NULL;
-		struct QUESTION* qinfo = NULL;
+		cSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP); //UDP socket for DNS queries
 
-		s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP); //UDP packet for DNS queries
-
-		//Configure the sockaddress structure with information of DNS server
 		dest.sin_family = AF_INET;
-		dest.sin_port = htons(53);
-		//Set the dns server
-		if (strlen(dns_servers[0]) > 0)
-		{
-			//Use the dns server found on system
-			//dest.sin_addr.s_addr = inet_addr(dns_servers[0]);
-			inet_pton(AF_INET, dns_servers[0], &dest.sin_addr);
-		}
-		else
-		{
-			//Use popular DNS servers 8.8.8.8, 8.8.4.4 Google or 77.88.8.8, 77.88.8.7(with blocking censored content) Yandex
-			//dest.sin_addr.s_addr = inet_addr("8.8.8.8");
-			inet_pton(AF_INET, dns_server.c_str(), &dest.sin_addr);
-		}
+		dest.sin_port = htons(DEF_PORT);
 
-		//Set the DNS structure to standard queries
+		inet_pton(AF_INET, dns_server.c_str(), &dest.sin_addr);
+
+		//Just save dns id for identifying after resiving package from the server
 		dns = (struct DNS_HEADER*) & buf;
+		unsigned short nPackageId = ntohs(dns->id);
 
-		printf("\nDNS request header id: %d", GetCurrentProcessId());
-
-		dns->id = (unsigned short)htons(GetCurrentProcessId());
-		dns->rd = 1; //Recursion Desired
-		dns->q_count = htons(1); //we have only 1 question
-
-		//point to the query portion
+		//Query name
 		qname = (unsigned char*)&buf[sizeof(struct DNS_HEADER)];
 
-		unsigned char host[] = "www.google.com";
-		ChangetoDnsNameFormat(qname, host);
-		qinfo = (struct QUESTION*) & buf[sizeof(struct DNS_HEADER) + (strlen((const char*)qname) + 1)]; //fill it
+		//Point to the query portion. 
+		//Also you can handle it to filter packages by record type or data
+		
+		qinfo = (struct QUESTION*) & buf[sizeof(struct DNS_HEADER) + (strlen((const char*)qname) + 1)];
 
-		qinfo->qtype = htons(1); //we are requesting the ipv4 address
-		qinfo->qclass = htons(1); //type IN (Internet)
+		printf("\nSending Packet to DNS server...");
 
-		printf("\nSending Packet...");
-		if (sendto(s, (char*)buf, sizeof(struct DNS_HEADER) + (strlen((const char*)qname) + 1) + sizeof(struct QUESTION), 0, (struct sockaddr*) & dest, sizeof(dest)) == SOCKET_ERROR)
+		if (sendto(cSock, (char*)buf, sizeof(struct DNS_HEADER) + (strlen((const char*)qname) + 1) + sizeof(struct QUESTION), 0, (struct sockaddr*) & dest, sizeof(dest)) == SOCKET_ERROR)
 		{
-			printf("%d error", WSAGetLastError());
+			printf("sendto() failed with error code : %d", WSAGetLastError());
+			exit(EXIT_FAILURE);
 		}
-		printf("Sent");
+		printf("Succesfuly sent");
 
 
 		int i = sizeof(dest);
 		printf("\nReceiving answer...");
-		if (recvfrom(s, (char*)buf, DEF_BUF_SIZE, 0, (struct sockaddr*) & dest, &i) == SOCKET_ERROR)
+		if (recvfrom(cSock, (char*)buf, DEF_BUF_SIZE, 0, (struct sockaddr*) & dest, &i) == SOCKET_ERROR)
 		{
 			printf("Failed. Error Code : %d", WSAGetLastError());
 		}
-		printf("Received.");
+		printf("\nRecive package from %s:%d", inet_ntoa(dest.sin_addr), ntohs(dest.sin_port));
 
-		handleDNSData(buf, strlen((const char*)qname) + 1);
+		dns = (struct DNS_HEADER*) & buf;
+		if (nPackageId != ntohs(dns->id))
+		{
+			printf("Error while receiving package : dns header id not the same");
+			continue;
+		}
 
-		return;
+		printf("\nDNS response data: ");
+		handleDNSData(buf);
+
+		printf("\nSending Packet back from Proxy to client %s:%d..."
+				, inet_ntoa(dest.sin_addr), ntohs(dest.sin_port));
+		//now reply the client with the same data
+		if (sendto(sSock, (char*)buf, recvLen, 0, (struct sockaddr*) & recvAddr, servLen) == SOCKET_ERROR)
+		{
+			printf("\nsendto() failed with error code : %d", WSAGetLastError());
+			exit(EXIT_FAILURE);
+		}
+		printf("Succesfuly sent\n");
+	}
+
+	closesocket(sSock);
+	closesocket(cSock);
+
+	return;
 }
 
 //this will convert www.google.com to 3www6google3com ;
@@ -458,19 +454,7 @@ int main(int argc, char** argv)
 		return 1;
 	}
 
-	if (!vm.count("hostname")) {
-		std::cout << "Enter hostname." << std::endl;
-		printUsage(argv[0]);
-		std::cout << desc << std::endl;
-		return 1;
-	}
-	unsigned char hostname[100];
-
-	std::string strHost = vm["hostname"].as<std::string>();
 	std::string strDNSServer = vm["dns_server"].as<std::string>();
-
-	std::copy(strHost.begin(), strHost.end(), hostname);
-	hostname[strHost.length()] = '\0';
 
 	WSADATA firstsock;
 	printf("\nInitialising Winsock...");
@@ -483,7 +467,7 @@ int main(int argc, char** argv)
 
 	listen(strDNSServer);
 
-	system("pause");
+	WSACleanup();
 
 	return 0;
 }

@@ -23,7 +23,7 @@ struct DNS_HEADER
 	unsigned short add_count; // number of resource entries
 };
 
-void printDNSHeaderInfo(DNS_HEADER* dns) {
+void printDNSHeaderInfo(const DNS_HEADER* dns) {
 
 	printf("\n================================== ");
 	printf("\nDNS header contains : ");
@@ -38,11 +38,11 @@ void printDNSHeaderInfo(DNS_HEADER* dns) {
 	printf("\n ad: %d", (dns->ad));
 	printf("\n ra: %d", (dns->ra));
 
-	printf("\nThe response contains : ");
+	printf("\nQuery contains : ");
 	printf("\n %d Questions.", ntohs(dns->q_count));
 	printf("\n %d Answers.", ntohs(dns->ans_count));
 	printf("\n %d Authoritative Servers.", ntohs(dns->auth_count));
 	printf("\n %d Additional records.", ntohs(dns->add_count));
-	printf("\n==================================\n ");
+	printf("\n==================================\n");
 
 }

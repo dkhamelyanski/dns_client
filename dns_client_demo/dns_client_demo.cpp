@@ -22,17 +22,6 @@ namespace po = boost::program_options;
 #pragma warning(disable : 4996)
 #pragma comment(lib,"ws2_32.lib") //Winsock Library
 
-//List of DNS Servers registered on the system
-char dns_servers[10][100];
-
-//Type field of Query and Answer
-#define T_A 1 /* host address */
-#define T_NS 2 /* authoritative server */
-#define T_CNAME 5 /* canonical name */
-#define T_SOA 6 /* start of authority zone */
-#define T_PTR 12 /* domain name pointer */
-#define T_MX 15 /* mail routing information */
-
 //Max size of UDP package
 static const size_t DEF_BUF_SIZE = 512;
 
@@ -48,35 +37,8 @@ static const std::string DEF_DNS_YANDEX = "77.88.8.7";
 void printUsage(char*);
 void ChangetoDnsNameFormat(unsigned char*, unsigned char*);
 unsigned char* ReadName(unsigned char*, unsigned char*, int*);
-unsigned char* PrepareDnsQueryPacket(unsigned char*);
 void handleDNSData(unsigned char*);
 void listen(const std::string &);
-
-void printUsage(char* programName) {
-	printf("\nUsage:\n"
-		"%s [-d dns_server] hostname\n"
-		"------\n", programName);
-}
-
-po::variables_map parse_args(int argc, char** argv, po::options_description& desc) {
-
-	desc.add_options()
-		("help,h", "Produce help message")
-		("dns_server,d"
-			, po::value<std::string>()->default_value(DEF_DNS_GOOGLE), 
-			"IPv4 address of DNS server to send the DNS request to. If not set the DNS request will be sent to the google DNS 8.8.8.8 ")
-		;
-
-	po::variables_map vm;
-	const auto& parsed = po::command_line_parser(argc, argv)
-		.options(desc)
-		.run();
-	po::store(parsed, vm);
-	po::notify(vm);
-
-	return vm;
-	
-}
 
 unsigned char* ReadName(unsigned char* reader, unsigned char* buffer, int* count)
 {
@@ -86,7 +48,7 @@ unsigned char* ReadName(unsigned char* reader, unsigned char* buffer, int* count
 
 	*count = 1;
 
-	name[0] = '\0';
+	name[0] = 0;
 
 	//read the names in 3www6google3com format
 	while (*reader != 0)
@@ -136,7 +98,7 @@ void handleDNSData(unsigned char* buf) {
 
 	//the replies from the DNS server
 	struct RES_RECORD	answers[20],
-						auth[20],
+						auth[20]{0,0,0},
 						addit[20];
 
 	struct sockaddr_in a;
@@ -162,138 +124,141 @@ void handleDNSData(unsigned char* buf) {
 
 	reader += sizeName + sizeof(struct QUESTION);
 
-	if (dns->ans_count || dns->auth_count || dns->add_count)
+	if (dns->ans_count | dns->auth_count | dns->add_count)
 	{
-		printf("\n=============ANSWER=============");
-
-		int i, j;
-		int stop = 0;
-
-		for (i = 0; i < ntohs(dns->ans_count); i++)
+		if (htons(qinfo->qtype) == T_A)
 		{
-			answers[i].name = ReadName(reader, buf, &stop);
-			reader += stop;
+			printf("\n=============ANSWER=============");
 
-			answers[i].resource = (struct R_DATA*)(reader);
-			reader += sizeof(struct R_DATA);
+			int i, j;
+			int stop = 0;
 
-			if (ntohs(answers[i].resource->type) == T_A) //if its an ipv4 address
+			for (i = 0; i < ntohs(dns->ans_count); i++)
 			{
-				answers[i].rdata = (unsigned char*)malloc(ntohs(answers[i].resource->data_len));
-
-				for (j = 0; j < ntohs(answers[i].resource->data_len); j++)
-					answers[i].rdata[j] = reader[j];
-
-				answers[i].rdata[ntohs(answers[i].resource->data_len)] = '\0';
-
-				reader += ntohs(answers[i].resource->data_len);
-
-			}
-			else
-			{
-				answers[i].rdata = ReadName(reader, buf, &stop);
+				answers[i].name = ReadName(reader, buf, &stop);
 				reader += stop;
-			}
 
-		}
+				answers[i].resource = (struct R_DATA*)(reader);
+				reader += sizeof(struct R_DATA);
 
-		//read authorities
-		for (i = 0; i < ntohs(dns->auth_count); i++)
-		{
-			auth[i].name = ReadName(reader, buf, &stop);
-			reader += stop;
-
-			auth[i].resource = (struct R_DATA*)(reader);
-			reader += sizeof(struct R_DATA);
-
-			auth[i].rdata = ReadName(reader, buf, &stop);
-			reader += stop;
-		}
-
-		//read additional
-		for (i = 0; i < ntohs(dns->add_count); i++)
-		{
-			addit[i].name = ReadName(reader, buf, &stop);
-			reader += stop;
-
-			addit[i].resource = (struct R_DATA*)(reader);
-			reader += sizeof(struct R_DATA);
-
-			if (ntohs(addit[i].resource->type) == T_A)
-			{
-				addit[i].rdata = (unsigned char*)malloc(ntohs(addit[i].resource->data_len));
-				for (j = 0; j < ntohs(addit[i].resource->data_len); j++)
-					addit[i].rdata[j] = reader[j];
-
-				addit[i].rdata[ntohs(addit[i].resource->data_len)] = '\0';
-				reader += ntohs(addit[i].resource->data_len);
-
-			}
-			else
-			{
-				addit[i].rdata = ReadName(reader, buf, &stop);
-				reader += stop;
-			}
-		}
-
-		//print answers
-		for (i = 0; i < ntohs(dns->ans_count); i++)
-		{
-			printf("\nAnswer : %d", i + 1);
-			printf("\nName : %s ", answers[i].name);
-
-			if (ntohs(answers[i].resource->type) == T_A) //IPv4 address
-			{
-				long* p;
-				p = (long*)answers[i].rdata;
-				a.sin_addr.s_addr = (*p); //working without ntohl
-				char buf[100];
-				inet_ntop(AF_INET, &a.sin_addr, buf, sizeof(buf));
-				printf("has IPv4 address : %s", buf);
-			}
-			else
-				if (ntohs(answers[i].resource->type) == T_CNAME) //Canonical name for an alias
+				if (ntohs(answers[i].resource->type) == T_A) //if its an ipv4 address
 				{
-					printf("has alias name : %s", answers[i].rdata);
+					answers[i].rdata = (unsigned char*)malloc(ntohs(answers[i].resource->data_len));
+
+					for (j = 0; j < ntohs(answers[i].resource->data_len); j++)
+						answers[i].rdata[j] = reader[j];
+
+					answers[i].rdata[ntohs(answers[i].resource->data_len)] = '\0';
+
+					reader += ntohs(answers[i].resource->data_len);
+
 				}
 				else
 				{
-					printf("-> %s", answers[i].rdata);
+					answers[i].rdata = ReadName(reader, buf, &stop);
+					reader += stop;
 				}
 
-			printf("\n");
-		}
-
-		//print authorities
-		for (i = 0; i < ntohs(dns->auth_count); i++)
-		{
-			printf("\nAuthorities : %d", i + 1);
-			printf("\nName : %s ", auth[i].name);
-			if (ntohs(auth[i].resource->type) == T_NS)
-			{
-				printf("has authoritative nameserver : %s", auth[i].rdata);
 			}
-			printf("\n");
-		}
 
-		//print additional resource records
-		for (i = 0; i < ntohs(dns->add_count); i++)
-		{
-			printf("\nAdditional : %d", i + 1);
-			printf("\nName : %s ", addit[i].name);
-			if (ntohs(addit[i].resource->type) == T_A)
+			//read authorities
+			for (i = 0; i < ntohs(dns->auth_count); i++)
 			{
-				long* p;
-				p = (long*)addit[i].rdata;
-				a.sin_addr.s_addr = (*p); //working without ntohl
-				char buf[100];
-				inet_ntop(AF_INET, &a.sin_addr, buf, sizeof(buf));
-				printf("has IPv4 address : %s", buf);
-			}
-			printf("\n");
-		}
+				auth[i].name = ReadName(reader, buf, &stop);
+				reader += stop;
 
-		printf("================================\n");
+				auth[i].resource = (struct R_DATA*)(reader);
+				reader += sizeof(struct R_DATA);
+
+				auth[i].rdata = ReadName(reader, buf, &stop);
+				reader += stop;
+			}
+
+			//read additional
+			for (i = 0; i < ntohs(dns->add_count); i++)
+			{
+				addit[i].name = ReadName(reader, buf, &stop);
+				reader += stop;
+
+				addit[i].resource = (struct R_DATA*)(reader);
+				reader += sizeof(struct R_DATA);
+
+				if (ntohs(addit[i].resource->type) == T_A)
+				{
+					addit[i].rdata = (unsigned char*)malloc(ntohs(addit[i].resource->data_len));
+					for (j = 0; j < ntohs(addit[i].resource->data_len); j++)
+						addit[i].rdata[j] = reader[j];
+
+					addit[i].rdata[ntohs(addit[i].resource->data_len)] = '\0';
+					reader += ntohs(addit[i].resource->data_len);
+
+				}
+				else
+				{
+					addit[i].rdata = ReadName(reader, buf, &stop);
+					reader += stop;
+				}
+			}
+
+			//print answers
+			for (i = 0; i < ntohs(dns->ans_count); i++)
+			{
+				printf("\nAnswer : %d", i + 1);
+				printf("\nName : %s ", answers[i].name);
+
+				if (ntohs(answers[i].resource->type) == T_A) //IPv4 address
+				{
+					long* p;
+					p = (long*)answers[i].rdata;
+					a.sin_addr.s_addr = (*p); //working without ntohl
+					char buf[100];
+					inet_ntop(AF_INET, &a.sin_addr, buf, sizeof(buf));
+					printf("has IPv4 address : %s", buf);
+				}
+				else
+					if (ntohs(answers[i].resource->type) == T_CNAME) //Canonical name for an alias
+					{
+						printf("has alias name : %s", answers[i].rdata);
+					}
+					else
+					{
+						printf("-> %s", answers[i].rdata);
+					}
+
+				printf("\n");
+			}
+
+			//print authorities
+			for (i = 0; i < ntohs(dns->auth_count); i++)
+			{
+				printf("\nAuthorities : %d", i + 1);
+				printf("\nName : %s ", auth[i].name);
+				if (ntohs(auth[i].resource->type) == T_NS)
+				{
+					printf("has authoritative nameserver : %s", auth[i].rdata);
+				}
+				printf("\n");
+			}
+
+			//print additional resource records
+			for (i = 0; i < ntohs(dns->add_count); i++)
+			{
+				printf("\nAdditional : %d", i + 1);
+				printf("\nName : %s ", addit[i].name);
+				if (ntohs(addit[i].resource->type) == T_A)
+				{
+					long* p;
+					p = (long*)addit[i].rdata;
+					a.sin_addr.s_addr = (*p); //working without ntohl
+					char buf[100];
+					inet_ntop(AF_INET, &a.sin_addr, buf, sizeof(buf));
+					printf("has IPv4 address : %s", buf);
+				}
+				printf("\n");
+			}
+
+			printf("================================\n");
+		}
 	}
 
 }
@@ -334,7 +299,7 @@ void listen(const std::string& dns_server)
 	int recvLen;
 	int sizeName;
 
-	//Just to show recieved IP address
+	//Just used to show recieved IP address
 	char recv_ip[256];
 	recv_ip[sizeof(recv_ip) - 1] = '\0';
 
@@ -372,11 +337,6 @@ void listen(const std::string& dns_server)
 	puts("Bind done");
 
 	inet_ntop(AF_INET, &servAddr.sin_addr, proxy_ip, sizeof(proxy_ip));
-
-	printf( "\n======= PROXY ADDR ======="
-			"\n===     %s:%d "
-			"\n=========================="
-			, proxy_ip, htons(servAddr.sin_port));
 
 	//keep listening for data
 	while (1)
@@ -417,15 +377,16 @@ void listen(const std::string& dns_server)
 		if (sendto(cSock, (char*)buf, recvLen, 0, (struct sockaddr*) & dest, sizeof(dest)) == SOCKET_ERROR)
 		{
 			printf("sendto() failed with error code : %d", WSAGetLastError());
-			exit(EXIT_FAILURE);
+			continue;
 		}
 		printf("Succesfuly sent");
 
 		int i = sizeof(dest);
 		printf("\nReceiving answer...");
-		if (recvfrom(cSock, (char*)buf, DEF_BUF_SIZE, 0, (struct sockaddr*) & dest, &i) == SOCKET_ERROR)
+		if ((recvLen = recvfrom(cSock, (char*)buf, DEF_BUF_SIZE, 0, (struct sockaddr*) & dest, &i)) == SOCKET_ERROR)
 		{
 			printf("Failed. Error Code : %d", WSAGetLastError());
+			continue;
 		}
 
 		inet_ntop(AF_INET, &dest.sin_addr, recv_ip, sizeof(recv_ip));
@@ -447,7 +408,7 @@ void listen(const std::string& dns_server)
 		if (sendto(sSock, (char*)buf, recvLen, 0, (struct sockaddr*) & recvAddr, servLen) == SOCKET_ERROR)
 		{
 			printf("\nsendto() failed with error code : %d", WSAGetLastError());
-			exit(EXIT_FAILURE);
+			continue;
 		}
 		printf("Succesfuly sent\n");
 	}
@@ -456,6 +417,33 @@ void listen(const std::string& dns_server)
 	closesocket(cSock);
 
 	return;
+}
+
+void printUsage(char* programName) {
+	printf("\nUsage:\n"
+		"%s [-d dns_server] hostname\n"
+		"------\n", programName);
+}
+
+po::variables_map parse_args(int argc, char** argv, po::options_description& desc) {
+
+	desc.add_options()
+		("help,h", "Produce help message")
+		("dns_server,d"
+			, po::value<std::string>()->default_value(DEF_DNS_GOOGLE),
+			"IPv4 address of DNS server to send the DNS request to. If not set the DNS request will be sent to the google DNS 8.8.8.8 ")
+		;
+
+	po::variables_map vm;
+	const auto& parsed = po::command_line_parser(argc, argv)
+		.options(desc)
+		.run();
+	
+	po::store(parsed, vm);
+	po::notify(vm);
+
+	return vm;
+
 }
 
 int main(int argc, char** argv)

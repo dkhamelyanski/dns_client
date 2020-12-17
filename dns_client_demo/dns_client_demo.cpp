@@ -319,10 +319,6 @@ void listen(const std::string& dns_server)
 	}
 	printf("Listen Socket created.");
 
-	char *host = NULL;
-	struct hostent* host_entry = gethostbyname(host); //find host information
-	const char * IP = inet_ntoa(*((struct in_addr*) host_entry->h_addr_list[0])); //Convert into IP string
-
 	//Prepare the sockaddr_in structure
 	servAddr.sin_family = AF_INET;
 	servAddr.sin_addr.s_addr = INADDR_ANY;
